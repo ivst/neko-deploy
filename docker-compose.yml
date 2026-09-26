@@ -1,0 +1,98 @@
+services:
+  neko:
+    image: ghcr.io/m1k1o/neko/firefox:3
+    container_name: neko
+    restart: unless-stopped
+    shm_size: "2gb"
+
+    expose:
+      - "8080"
+
+    ports:
+      - "52000-52100:52000-52100/udp"
+
+    environment:
+      # Desktop
+      NEKO_DESKTOP_SCREEN: "1920x1080@30"
+
+      # Authentication
+      NEKO_MEMBER_PROVIDER: "multiuser"
+      NEKO_MEMBER_MULTIUSER_USER_PASSWORD: "${NEKO_USER_PASSWORD}"
+      NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: "${NEKO_ADMIN_PASSWORD}"
+
+      # HTTP / reverse proxy
+      NEKO_SERVER_BIND: "0.0.0.0:8080"
+      NEKO_SERVER_PROXY: "true"
+
+      # WebRTC
+      NEKO_WEBRTC_EPR: "52000-52100"
+      NEKO_WEBRTC_ICELITE: "1"
+      NEKO_WEBRTC_NAT1TO1: "${PUBLIC_IP}"
+
+      # WebRTC viewer codec
+      NEKO_CAPTURE_VIDEO_CODEC: "vp8"
+
+      # RTMP broadcast
+      NEKO_CAPTURE_BROADCAST_AUTOSTART: "false"
+      NEKO_CAPTURE_BROADCAST_PIPELINE: >-
+        flvmux name=mux streamable=true
+        ! rtmpsink location={url}
+        pulsesrc device={device}
+        ! audio/x-raw,channels=2
+        ! audioconvert
+        ! queue
+        ! voaacenc bitrate=160000
+        ! mux.
+        ximagesrc display-name={display} show-pointer=true use-damage=false
+        ! video/x-raw,framerate=30/1
+        ! videoconvert
+        ! queue
+        ! x264enc
+          threads=4
+          bitrate=7000
+          bframes=0
+          key-int-max=60
+          byte-stream=true
+          tune=zerolatency
+          speed-preset=veryfast
+        ! h264parse config-interval=-1
+        ! mux.
+
+    volumes:
+      - ./firefox-profile:/home/neko/.mozilla/firefox/profile.default
+      - ./firefox-policies/policies.json:/usr/lib/firefox/distribution/policies.json:ro
+
+    networks:
+      - neko_net
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: neko-caddy
+    restart: unless-stopped
+
+    environment:
+      DOMAIN: "${DOMAIN}"
+
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+    networks:
+      - neko_net
+
+    depends_on:
+      - neko
+
+networks:
+  neko_net:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

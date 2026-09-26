@@ -1,0 +1,5 @@
+.env
+firefox-profile/
+*.tar.gz
+*.zip
+.DS_Store
