@@ -19,8 +19,8 @@ Usage:
 Options:
   --domain DOMAIN          Public hostname, e.g. subdomain.example.com
   --public-ip IP           Public IPv4 address. Auto-detected if omitted.
-  --user-password PASS     Neko user password. Generated if omitted.
-  --admin-password PASS    Neko admin password. Generated if omitted.
+  Passwords can be supplied through environment variables on the first install.
+  Password arguments are forbidden (process-list and shell-history exposure).
   --install-dir DIR        Install directory (default: /opt/neko)
   --ufw                    Add UFW rules for 80/tcp, 443/tcp and 52000:52100/udp
   --no-start               Prepare configuration but do not start containers
@@ -47,13 +47,10 @@ while [[ $# -gt 0 ]]; do
       PUBLIC_IP="${2:?missing value for --public-ip}"
       shift 2
       ;;
-    --user-password)
-      USER_PASSWORD="${2:?missing value for --user-password}"
-      shift 2
-      ;;
-    --admin-password)
-      ADMIN_PASSWORD="${2:?missing value for --admin-password}"
-      shift 2
+    --user-password|--admin-password)
+      echo "ERROR: Passwords in command-line arguments are unsafe." >&2
+      echo "Use NEKO_USER_PASSWORD / NEKO_ADMIN_PASSWORD or edit the protected .env." >&2
+      exit 2
       ;;
     --install-dir)
       INSTALL_DIR="${2:?missing value for --install-dir}"
@@ -84,30 +81,53 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-if [[ -z "$DOMAIN" && -t 0 ]]; then
-  read -r -p "Domain for Neko (e.g. subdomain.example.com): " DOMAIN
+# Existing credentials must not be silently rotated on reinstall.
+REUSE_CONFIG=0
+if [[ -e "${INSTALL_DIR}/.env" || -L "${INSTALL_DIR}/.env" ]]; then
+  if [[ ! -f "${INSTALL_DIR}/.env" || -L "${INSTALL_DIR}/.env" ]]; then
+    echo "ERROR: ${INSTALL_DIR}/.env must be a regular file, not a symlink." >&2
+    exit 1
+  fi
+  REUSE_CONFIG=1
+  echo "==> Preserving existing ${INSTALL_DIR}/.env"
+  if [[ -n "$DOMAIN" || -n "$PUBLIC_IP" || -n "$USER_PASSWORD" || -n "$ADMIN_PASSWORD" ]]; then
+    echo "WARNING: Domain, IP and password overrides ignored on reinstall." >&2
+    echo "Edit ${INSTALL_DIR}/.env explicitly to change existing settings." >&2
+  fi
+  # Only parse known keys, never source .env as executable shell code.
+  DOMAIN="$(sed -n 's/^DOMAIN=//p' "${INSTALL_DIR}/.env" | head -n 1)"
+  PUBLIC_IP="$(sed -n 's/^PUBLIC_IP=//p' "${INSTALL_DIR}/.env" | head -n 1)"
+else
+  if [[ -z "$DOMAIN" && -t 0 ]]; then
+    read -r -p "Domain for Neko (e.g. subdomain.example.com): " DOMAIN
+  fi
+  if [[ -z "$DOMAIN" ]]; then
+    echo "DOMAIN is required. Use --domain or DOMAIN=..." >&2
+    exit 1
+  fi
+  if [[ -z "$PUBLIC_IP" ]]; then
+    PUBLIC_IP="$(curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)"
+  fi
+  if [[ -z "$PUBLIC_IP" ]]; then
+    echo "Could not auto-detect public IPv4. Use --public-ip." >&2
+    exit 1
+  fi
+  if [[ -z "$USER_PASSWORD" ]]; then
+    USER_PASSWORD="$(openssl rand -hex 16)"
+  fi
+  if [[ -z "$ADMIN_PASSWORD" ]]; then
+    ADMIN_PASSWORD="$(openssl rand -hex 20)"
+  fi
+  for value in "$DOMAIN" "$PUBLIC_IP" "$USER_PASSWORD" "$ADMIN_PASSWORD"; do
+    if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+      echo "ERROR: Configuration values must not contain newlines." >&2
+      exit 1
+    fi
+  done
 fi
-
-if [[ -z "$DOMAIN" ]]; then
-  echo "DOMAIN is required. Use --domain or DOMAIN=..." >&2
+if [[ -z "$DOMAIN" || -z "$PUBLIC_IP" ]]; then
+  echo "ERROR: DOMAIN and PUBLIC_IP are required in ${INSTALL_DIR}/.env." >&2
   exit 1
-fi
-
-if [[ -z "$PUBLIC_IP" ]]; then
-  PUBLIC_IP="$(curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)"
-fi
-
-if [[ -z "$PUBLIC_IP" ]]; then
-  echo "Could not auto-detect public IPv4. Use --public-ip." >&2
-  exit 1
-fi
-
-if [[ -z "$USER_PASSWORD" ]]; then
-  USER_PASSWORD="$(openssl rand -hex 16)"
-fi
-
-if [[ -z "$ADMIN_PASSWORD" ]]; then
-  ADMIN_PASSWORD="$(openssl rand -hex 20)"
 fi
 
 echo "==> Installing prerequisites"
@@ -140,12 +160,15 @@ install -m 0644 "${SCRIPT_DIR}/firefox-policies/policies.json" \
 chown -R 1000:1000 "${INSTALL_DIR}/firefox-profile"
 chmod 700 "${INSTALL_DIR}/firefox-profile"
 
-cat > "${INSTALL_DIR}/.env" <<EOF
+if [[ "${REUSE_CONFIG}" -eq 0 ]]; then
+  umask 077
+  cat > "${INSTALL_DIR}/.env" <<EOF
 DOMAIN=${DOMAIN}
 PUBLIC_IP=${PUBLIC_IP}
 NEKO_USER_PASSWORD=${USER_PASSWORD}
 NEKO_ADMIN_PASSWORD=${ADMIN_PASSWORD}
 EOF
+fi
 chmod 600 "${INSTALL_DIR}/.env"
 
 if [[ "${CONFIGURE_UFW}" -eq 1 ]]; then
@@ -192,11 +215,9 @@ URL:
 Public IP:
   ${PUBLIC_IP}
 
-Neko user password:
-  ${USER_PASSWORD}
-
-Neko admin password:
-  ${ADMIN_PASSWORD}
+Credentials:
+  Stored in ${INSTALL_DIR}/.env (mode 600); never printed automatically.
+  To view intentionally: sudo grep '^NEKO_.*_PASSWORD=' ${INSTALL_DIR}/.env
 
 IMPORTANT:
   1. Point the DNS A record for ${DOMAIN} to ${PUBLIC_IP}.

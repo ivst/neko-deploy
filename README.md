@@ -67,7 +67,13 @@ sudo ./install.sh \
   --public-ip 203.0.113.10
 ```
 
-The script generates random Neko user/admin passwords if they are not supplied.
+On the first installation, the script generates random Neko user/admin passwords if none are supplied. They are stored in `/opt/neko/.env` (permissions `600`) and **are not printed to the terminal**. To view deliberately:
+
+```bash
+sudo grep '^NEKO_.*_PASSWORD=' /opt/neko/.env
+```
+
+Re-running the installer **preserves existing `.env` credentials**, even if new domain/IP/password values are passed. To change them, use `sudoedit /opt/neko/.env` and recreate the containers. Command-line password arguments are rejected because they may be exposed in process listings or shell history.
 
 Optional UFW rules:
 
@@ -78,15 +84,13 @@ sudo ./install.sh \
   --ufw
 ```
 
-You can also provide values through environment variables:
+You can also supply domain and IP using environment variables:
 
 ```bash
-sudo DOMAIN=subdomain.example.com \
-  PUBLIC_IP=203.0.113.10 \
-  NEKO_USER_PASSWORD='...' \
-  NEKO_ADMIN_PASSWORD='...' \
-  ./install.sh
+sudo DOMAIN=subdomain.example.com PUBLIC_IP=203.0.113.10 ./install.sh
 ```
+
+Password environment variables are still supported for automated first installs, but do not type secret assignments directly into shell history. Prefer generated passwords, or edit the protected `.env` with `sudoedit`.
 
 ## DNS and firewall
 
@@ -249,11 +253,51 @@ Update:
 sudo ./update.sh
 ```
 
-Backup:
+Encrypted backup:
 
 ```bash
-sudo ./backup.sh
+sudo BACKUP_AGE_RECIPIENT='age1YOUR_REAL_PUBLIC_RECIPIENT' ./backup.sh
 ```
+
+## Encrypted backups and restore
+
+Backup archives contain **Neko passwords and the complete Firefox profile**, including cookies and sessions. `backup.sh` now **fails closed** if encryption is not configured. It streams `tar` directly into `age` without creating an unencrypted temporary archive and sets output permissions to `600`.
+
+1. Install `age` on the VPS:
+
+   ```bash
+   sudo apt-get install age
+   ```
+
+2. Generate an age key pair on a **trusted local machine**, ideally not on the VPS:
+
+   ```bash
+   umask 077
+   age-keygen -o neko-backup-key.txt
+   age-keygen -y neko-backup-key.txt
+   ```
+
+   Securely store the **private** `neko-backup-key.txt` outside of the repository and preferably off the VPS. The last command prints the **public recipient** (`age1...`), which is safe to copy to the VPS.
+
+3. Back up on the VPS with the real public recipient:
+
+   ```bash
+   sudo BACKUP_AGE_RECIPIENT='age1YOUR_REAL_PUBLIC_RECIPIENT' ./backup.sh
+   ```
+
+   The resulting `/root/neko-backup-*.tar.gz.age` is encrypted. Transfer it to secure storage.
+4. Inspect and restore on a trusted machine with the matching private identity:
+
+   ```bash
+   age -d -i neko-backup-key.txt -o restored.tar.gz /path/to/neko-backup.tar.gz.age
+   tar -tzf restored.tar.gz
+   # After checking the contents, restore to your chosen directory:
+   # tar -xzf restored.tar.gz -C /your/restore/directory
+   ```
+
+   Decrypted archives contain live credentials; delete them securely afterward.
+
+**Explicit plaintext opt-out:** `sudo ./backup.sh --plaintext` allows legacy plaintext backups but is **not recommended**. A plain `sudo ./backup.sh` without `BACKUP_AGE_RECIPIENT` now exits with an error.
 
 ## RTMP diagnostics
 
@@ -285,7 +329,9 @@ delivery_rate
 ## Security
 
 - Restrict SSH to trusted IPs.
-- Keep `.env` private (`chmod 600`).
+- Keep `.env` private (`chmod 600`) and out of source control.
+- Installer preserves credentials and never prints them by default.
+- Encrypt backups with `age` and keep the private identity off the VPS.
 - Never commit RTMP stream keys.
 - Rotate any stream key that has been pasted into public logs or chats.
 - Consider a cloud firewall in addition to UFW.

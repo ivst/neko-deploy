@@ -1,0 +1,20 @@
+name: Neko deployment security tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install backup encryption tool
+        run: sudo apt-get update && sudo apt-get install -y age
+      - name: Check Bash syntax
+        run: bash -n install.sh backup.sh update.sh tests/security-smoke.sh
+      - name: Exercise install and backup safety
+        run: sudo bash tests/security-smoke.sh

@@ -1,5 +1,11 @@
 .env
+.env.*
+!.env.example
 firefox-profile/
 *.tar.gz
 *.zip
 .DS_Store
+*.age
+*.agekey
+*.pem
+*.key
